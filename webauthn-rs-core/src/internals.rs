@@ -179,6 +179,7 @@ impl Credential {
             hmac_create_secret,
             appid,
             cred_props,
+            prf: ExtnState::NotRequested,
         };
 
         trace!(?extensions);

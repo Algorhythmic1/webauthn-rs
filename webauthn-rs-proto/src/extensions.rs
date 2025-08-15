@@ -2,6 +2,8 @@
 
 use base64urlsafedata::Base64UrlSafeData;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wasm")]
+use js_sys::Uint8Array;
 
 /// Valid credential protection policies
 #[derive(Debug, Serialize, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -51,10 +53,31 @@ pub struct CredProtect {
     pub enforce_credential_protection_policy: Option<bool>,
 }
 
+/// Represents the PRF extension inputs used in WebAuthn.
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrfExtension {
+    /// Contains the salt values used for PRF evaluation during authentication.
+    /// During registration, this field is ignored or should be None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eval: Option<PrfEval>,
+}
+
+/// Contains the salt values used for PRF evaluation.
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrfEval {
+    /// The first salt value (handled by Base64UrlSafeData)
+    pub first: Base64UrlSafeData,
+    /// The second salt value, if it exists (handled by Base64UrlSafeData)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub second: Option<Base64UrlSafeData>,
+}
+
 /// Extension option inputs for PublicKeyCredentialCreationOptions.
 ///
 /// Implements \[AuthenticatorExtensionsClientInputs\] from the spec.
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestRegistrationExtensions {
     /// The `credProtect` extension options
@@ -80,19 +103,13 @@ pub struct RequestRegistrationExtensions {
     /// CTAP2.1 create hmac secret
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hmac_create_secret: Option<bool>,
+
+    /// PRF extension options
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prf: Option<PrfExtension>,
 }
 
-impl Default for RequestRegistrationExtensions {
-    fn default() -> Self {
-        RequestRegistrationExtensions {
-            cred_protect: None,
-            uvm: Some(true),
-            cred_props: Some(true),
-            min_pin_length: None,
-            hmac_create_secret: None,
-        }
-    }
-}
+
 
 // Unable to create from, because it's an out of crate struct
 #[allow(clippy::from_over_into)]
@@ -108,6 +125,7 @@ impl Into<js_sys::Object> for &RequestRegistrationExtensions {
             cred_props,
             min_pin_length,
             hmac_create_secret,
+            prf,
         } = self;
 
         let obj = Object::new();
@@ -144,6 +162,11 @@ impl Into<js_sys::Object> for &RequestRegistrationExtensions {
             .unwrap();
         }
 
+        if let Some(_prf_input) = prf {
+            let empty_obj = Object::new();
+            js_sys::Reflect::set(&obj, &"prf".into(), &empty_obj).unwrap();
+        }
+
         obj
     }
 }
@@ -165,7 +188,7 @@ pub struct HmacGetSecretInput {
 /// Extension option inputs for PublicKeyCredentialRequestOptions
 ///
 /// Implements \[AuthenticatorExtensionsClientInputs\] from the spec
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestAuthenticationExtensions {
     /// The `appid` extension options
@@ -182,6 +205,10 @@ pub struct RequestAuthenticationExtensions {
     /// Hmac get secret
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hmac_get_secret: Option<HmacGetSecretInput>,
+
+    /// PRF extension options
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prf: Option<PrfExtension>,
 }
 
 // Unable to create from, because it's an out of crate struct
@@ -193,10 +220,10 @@ impl Into<js_sys::Object> for &RequestAuthenticationExtensions {
         use wasm_bindgen::JsValue;
 
         let RequestAuthenticationExtensions {
-            // I don't think we care?
             appid: _,
             uvm,
             hmac_get_secret,
+            prf,
         } = self;
 
         let obj = Object::new();
@@ -217,6 +244,29 @@ impl Into<js_sys::Object> for &RequestAuthenticationExtensions {
             }
 
             js_sys::Reflect::set(&obj, &"hmacGetSecret".into(), &hmac).unwrap();
+        }
+
+        if let Some(prf_input) = prf {
+            if let Some(eval_input) = &prf_input.eval { 
+                let prf_obj = Object::new();
+                let eval_obj = Object::new();
+                
+                let first_array = Uint8Array::from(eval_input.first.as_slice());
+                js_sys::Reflect::set(&eval_obj, &"first".into(), &first_array.buffer()).unwrap();
+                
+                match &eval_input.second {
+                    Some(second_bytes) => {
+                        let second_array = Uint8Array::from(second_bytes.as_slice());
+                        js_sys::Reflect::set(&eval_obj, &"second".into(), &second_array.buffer()).unwrap();
+                    }
+                    None => {
+                        js_sys::Reflect::set(&eval_obj, &"second".into(), &JsValue::null()).unwrap();
+                    }
+                }
+                
+                js_sys::Reflect::set(&prf_obj, &"eval".into(), &eval_obj).unwrap();
+                js_sys::Reflect::set(&obj, &"prf".into(), &prf_obj).unwrap();
+            }
         }
 
         obj
@@ -243,6 +293,10 @@ pub struct AuthenticationExtensionsClientOutputs {
     /// The response to a hmac get secret request.
     #[serde(default)]
     pub hmac_get_secret: Option<HmacGetSecretOutput>,
+
+    /// PRF extension value
+    #[serde(default)]
+    pub prf: Option<PrfEval>,
 }
 
 #[cfg(feature = "wasm")]
@@ -274,9 +328,27 @@ impl From<web_sys::AuthenticationExtensionsClientOutputs>
                 output1.map(|output1| HmacGetSecretOutput { output1, output2 })
             });
 
+        let prf = js_sys::Reflect::get(&ext, &"prf".into())
+            .ok()
+            .and_then(|jv| {
+                let prf_obj = js_sys::Reflect::get(&jv, &"eval".into()).ok()?;
+                let first_val = js_sys::Reflect::get(&prf_obj, &"first".into()).ok()?;
+                let first_bytes = Uint8Array::new(&first_val).to_vec();
+
+                let second_bytes = js_sys::Reflect::get(&prf_obj, &"second".into())
+                    .ok()
+                    .map(|v| Uint8Array::new(&v).to_vec());
+
+                Some(PrfEval {
+                    first: Base64UrlSafeData::from(first_bytes),
+                    second: second_bytes.map(Base64UrlSafeData::from),
+                })
+            });
+
         AuthenticationExtensionsClientOutputs {
             appid,
             hmac_get_secret,
+            prf,
         }
     }
 }
@@ -317,6 +389,10 @@ pub struct RegistrationExtensionsClientOutputs {
     /// Indicates the current minimum PIN length
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_pin_length: Option<u32>,
+
+    /// PRF extension results
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prf: Option<PrfEval>,
 }
 
 #[cfg(feature = "wasm")]
@@ -352,12 +428,30 @@ impl From<web_sys::AuthenticationExtensionsClientOutputs> for RegistrationExtens
             .and_then(|jv| jv.as_f64())
             .map(|f| f as u32);
 
+        let prf = js_sys::Reflect::get(&ext, &"prf".into())
+            .ok()
+            .and_then(|jv| {
+                let prf_obj = js_sys::Reflect::get(&jv, &"eval".into()).ok()?;
+                let first_val = js_sys::Reflect::get(&prf_obj, &"first".into()).ok()?;
+                let first_bytes = Uint8Array::new(&first_val).to_vec();
+
+                let second_bytes = js_sys::Reflect::get(&prf_obj, &"second".into())
+                    .ok()
+                    .map(|v| Uint8Array::new(&v).to_vec());
+
+                Some(PrfEval {
+                    first: Base64UrlSafeData::from(first_bytes),
+                    second: second_bytes.map(Base64UrlSafeData::from),
+                })
+            });
+
         RegistrationExtensionsClientOutputs {
             appid,
             cred_props,
             hmac_secret,
             cred_protect,
             min_pin_length,
+            prf,
         }
     }
 }
@@ -399,6 +493,9 @@ pub struct RegisteredExtensions {
     /// The state of the client credential properties extension
     #[serde(default)]
     pub cred_props: ExtnState<CredProps>,
+    /// The state of the PRF extension
+    #[serde(default)]
+    pub prf: ExtnState<PrfEval>,
 }
 
 impl RegisteredExtensions {
@@ -409,6 +506,7 @@ impl RegisteredExtensions {
             hmac_create_secret: ExtnState::NotRequested,
             appid: ExtnState::NotRequested,
             cred_props: ExtnState::NotRequested,
+            prf: ExtnState::NotRequested,
         }
     }
 }

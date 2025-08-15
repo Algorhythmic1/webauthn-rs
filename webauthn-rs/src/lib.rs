@@ -222,6 +222,7 @@ pub mod prelude {
         AttestationMetadata, AuthenticationResult, AuthenticationState, CreationChallengeResponse,
         CredentialID, ParsedAttestation, ParsedAttestationData, PublicKeyCredential,
         RegisterPublicKeyCredential, RequestChallengeResponse,
+        PrfExtension, PrfEval, RequestAuthenticationExtensions, RequestRegistrationExtensions,
     };
     pub use webauthn_rs_core::proto::{
         COSEAlgorithm, COSEEC2Key, COSEKey, COSEKeyType, COSEKeyTypeId, COSEOKPKey, COSERSAKey,
@@ -526,10 +527,11 @@ impl Webauthn {
     /// let (ccr, skr) = webauthn
     ///     .start_passkey_registration(
     ///         user_unique_id,
-    ///         "claire",
-    ///         "Claire",
-    ///         None, // No other credentials are registered yet.
-    ///     )
+            ///         "claire",
+        ///         "Claire",
+        ///         None, // No other credentials are registered yet.
+        ///         None, // No extensions.
+        ///     )
     ///     .expect("Failed to start registration.");
     /// ```
     pub fn start_passkey_registration(
@@ -538,8 +540,9 @@ impl Webauthn {
         user_name: &str,
         user_display_name: &str,
         exclude_credentials: Option<Vec<CredentialID>>,
+        extensions: Option<RequestRegistrationExtensions>,
     ) -> WebauthnResult<(CreationChallengeResponse, PasskeyRegistration)> {
-        let extensions = Some(RequestRegistrationExtensions {
+        let extensions = extensions.or_else(|| Some(RequestRegistrationExtensions {
             cred_protect: Some(CredProtect {
                 // Since this may contain PII, we want to enforce this. We also
                 // want the device to strictly enforce its UV state.
@@ -553,7 +556,8 @@ impl Webauthn {
             cred_props: Some(true),
             min_pin_length: None,
             hmac_create_secret: None,
-        });
+            prf: None,
+        }));
 
         let builder = self
             .core
@@ -610,6 +614,7 @@ impl Webauthn {
             cred_props: Some(true),
             min_pin_length: None,
             hmac_create_secret: None,
+            prf: None,
         });
 
         let builder = self
@@ -675,8 +680,12 @@ impl Webauthn {
     pub fn start_passkey_authentication(
         &self,
         creds: &[Passkey],
+        extensions: Option<RequestAuthenticationExtensions>,
     ) -> WebauthnResult<(RequestChallengeResponse, PasskeyAuthentication)> {
-        let extensions = None;
+        debug!(
+            "Starting passkey authentication for {} possible keys",
+            creds.len()
+        );
         let creds = creds.iter().map(|sk| sk.cred.clone()).collect();
         let policy = Some(UserVerificationPolicy::Required);
         let allow_backup_eligible_upgrade = true;
@@ -872,6 +881,7 @@ impl Webauthn {
             cred_props: Some(true),
             min_pin_length: None,
             hmac_create_secret: None,
+            prf: None,
         });
 
         let policy = if self.user_presence_only_security_keys {
@@ -1166,6 +1176,7 @@ impl Webauthn {
             // https://fidoalliance.org/specs/fido-v2.1-rd-20210309/fido-client-to-authenticator-protocol-v2.1-rd-20210309.html#sctn-minpinlength-extension
             min_pin_length: Some(true),
             hmac_create_secret: Some(true),
+            prf: None,
         });
 
         let builder = self
@@ -1256,6 +1267,7 @@ impl Webauthn {
             appid: None,
             uvm: Some(true),
             hmac_get_secret: None,
+            prf: None,
         });
 
         let policy = Some(UserVerificationPolicy::Required);
@@ -1323,6 +1335,7 @@ impl Webauthn {
             appid: None,
             uvm: Some(true),
             hmac_get_secret: None,
+            prf: None,
         });
         let allow_backup_eligible_upgrade = false;
         let hints = None;
@@ -1426,6 +1439,7 @@ impl Webauthn {
             // https://fidoalliance.org/specs/fido-v2.1-rd-20210309/fido-client-to-authenticator-protocol-v2.1-rd-20210309.html#sctn-minpinlength-extension
             min_pin_length: Some(true),
             hmac_create_secret: Some(true),
+            prf: None,
         });
 
         let builder = self
@@ -1500,6 +1514,7 @@ impl Webauthn {
             appid: None,
             uvm: Some(true),
             hmac_get_secret: None,
+            prf: None,
         });
 
         let policy = Some(UserVerificationPolicy::Required);
